@@ -1169,6 +1169,44 @@ class TestConsistency(Tester):
         # prior to CASSANDRA-13880 this would cause short read protection to loop forever
         assert_none(session, "SELECT DISTINCT id FROM test.test WHERE id = 0;", cl=ConsistencyLevel.ALL)
 
+    def test_select_distinct(self):
+        # create a cluster
+        cluster = self.cluster
+        cluster.populate(2).start()
+        node1 = cluster.nodelist()[0]
+
+        # get session to node 1
+        session = self.patient_cql_connection(node1)
+
+        # create schema
+        session.execute("CREATE KEYSPACE IF NOT EXISTS test WITH REPLICATION = {'class':'SimpleStrategy','replication_factor': 2};")
+        session.execute("CREATE TABLE IF NOT EXISTS test.test (pk text, ck int, v int, PRIMARY KEY (pk, ck));")
+
+        # insert data
+        partitions = 10
+        rows_per_partition = 2
+        for pk in range(partitions):
+            for ck in range(rows_per_partition):
+                key = "random_key_" + str(pk)
+                session.execute(SimpleStatement("INSERT INTO test.test (pk, ck, v) VALUES ('%s', %d, 20230926)" % (key, ck), consistency_level=ConsistencyLevel.ALL))
+
+        # select distinct
+        query = SimpleStatement("SELECT DISTINCT pk FROM test.test", fetch_size=2147483647, consistency_level=ConsistencyLevel.QUORUM)
+        result = session.execute(query, trace=True)
+
+        trace = result.get_query_trace()
+
+        self.pprint_trace(trace)
+
+        assert_length_equal(result.current_rows, partitions)
+
+    def pprint_trace(self, trace):
+        """Pretty print a trace"""
+        print(("-" * 40))
+        for t in trace.events:
+            print(("%s\t%s\t%s\t%s" % (t.source, t.source_elapsed, t.description, t.thread_name)))
+        print(("-" * 40))
+
     @since('3.0')
     @ported_to_in_jvm('4.0')
     def test_13747(self):
